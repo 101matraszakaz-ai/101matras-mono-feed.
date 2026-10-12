@@ -52,9 +52,45 @@ function isHiddenBrand($brand) {
 }
 
 // ---------------------------------------------------------------
-// Pre-2026-10-11 state (restored on request for comparison): only the
-// single hardcoded "King Firm" test exception, not the generalized
-// $BRN_ENABLED_MODELS mechanism added later.
+// Виняток для бренду BRN: решта BRN лишається прихованою (через
+// $HIDDEN_BRANDS вище), але ці конкретні моделі й розміри -- робимо
+// доступними до замовлення з кількістю "10 шт.", бо по них прийшло
+// підтвердження реального залишку від постачальника.
+//   - 2026-09-17: King Firm (усі розміри, тестова позиція -- товару
+//     ще немає на сайті, тож рядок наразі ні на що не впливає).
+//   - 2026-10-11: Exuberant, Elegant, Eclipse, Majestic -- конкретні
+//     розміри нижче (решта розмірів цих моделей, якщо є в фіді,
+//     лишаються прихованими, бо по них підтвердження не було).
+// Щоб додати ще одну модель/розмір пізніше -- просто допиши рядок
+// у $BRN_ENABLED_MODELS.
+// ---------------------------------------------------------------
+$BRN_ENABLED_MODELS = [
+    'king firm' => null, // null = усі розміри
+    'exuberant' => ['160x200', '180x200', '200x200'],
+    'elegant'   => ['120x200', '140x200', '160x200', '180x200', '200x200'],
+    'eclipse'   => ['160x200', '180x200'],
+    'majestic'  => ['160x200', '180x200'],
+];
+
+function brnSizeToPattern($size) {
+    $parts = preg_split('/x/i', $size);
+    if (count($parts) !== 2) return preg_quote($size, '/');
+    return preg_quote(trim($parts[0]), '/') . '\s*[xхX×]\s*' . preg_quote(trim($parts[1]), '/');
+}
+
+function isBrnEnabledModelSize($brand, $title) {
+    global $BRN_ENABLED_MODELS;
+    if (mb_stripos($brand, 'brn') === false) return false;
+    foreach ($BRN_ENABLED_MODELS as $model => $sizes) {
+        if (mb_stripos($title, $model) === false) continue;
+        if ($sizes === null) return true; // усі розміри цієї моделі
+        foreach ($sizes as $size) {
+            if (preg_match('/' . brnSizeToPattern($size) . '/ui', $title)) return true;
+        }
+        return false; // модель знайдена, але розмір не з дозволеного списку
+    }
+    return false;
+}
 
 // ---------------------------------------------------------------
 // Точкове блокування за НАЗВОЮ моделі (коли точних артикулів/SKU
@@ -796,16 +832,12 @@ if ($type === 'prices') {
                 $daysToDispatch = 14;
             }
 
-            // ---------------------------------------------------------------
-            // TEMPORARY EXPERIMENT (за проханням Віталика, 2026-09-17): один
-            // конкретний матрац BRN "King Firm" показуємо доступним для
-            // замовлення з фіксованою кількістю "10 шт.", щоб перевірити, чи
-            // товар з'явиться на вітрині Мономаркету. Решта BRN лишається
-            // прихованою як і раніше (isHiddenBrand нижче).
-            // ---------------------------------------------------------------
-            $isBrnKingFirmExperiment = mb_stripos($brandForCheck, 'brn') !== false
-                && mb_stripos($titleForCustomSizeCheck, 'king firm') !== false;
-            if ($isBrnKingFirmExperiment) {
+            // BRN: окремі дозволені модель+розмір (список у
+            // $BRN_ENABLED_MODELS вище) показуємо доступними до
+            // замовлення з кількістю "10 шт." Решта BRN лишається
+            // прихованою (isHiddenBrand нижче).
+            $isBrnEnabledException = isBrnEnabledModelSize($brandForCheck, $titleForCustomSizeCheck);
+            if ($isBrnEnabledException) {
                 $isAvailable = true;
                 $realStock = 10;
             }
@@ -815,9 +847,9 @@ if ($type === 'prices') {
             // the "mattresses always available" rule above, and yields
             // only to nothing -- it's the final word on availability for
             // these brands, applied even for a matched/custom-size row.
-            // (Except the King Firm experiment above, which is meant to
-            // win over this.)
-            if (isHiddenBrand($brandForCheck) && !$isBrnKingFirmExperiment) {
+            // (Except the BRN enabled-model exception above, which is
+            // meant to win over this.)
+            if (isHiddenBrand($brandForCheck) && !$isBrnEnabledException) {
                 $isAvailable = false;
             }
 
