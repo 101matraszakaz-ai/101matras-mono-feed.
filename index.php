@@ -118,6 +118,66 @@ function isBlockedSku($offer) {
     return false;
 }
 
+// ---------------------------------------------------------------
+// "Розмір під замовлення" / "ціна за м2" detector -- extracted into
+// its own function (2026-10-29) so both type=prices (availability)
+// and type=catalog (listing) use exactly the same rule instead of
+// two copies that could drift apart. A product matching this has no
+// fixed size/price, so it can never satisfy Мономаркет's required
+// size characteristics (Розмір матрацу / Спальний розмір / Ширина і
+// Довжина матрацу) -- Мономаркет flagged these as a catalog problem
+// (quality report, 2026-10-29: "Нестандарт, ціна за м2" / "розмір
+// матрацу на замовлення" / etc.), so type=catalog now excludes them
+// entirely rather than listing them with characteristics that can
+// never be filled in.
+// ---------------------------------------------------------------
+function isCustomSizeOrderTitle($title) {
+    return mb_stripos($title, 'під замов') !== false // catches "під замовлення" even truncated to "під замов" (Horoshop cuts long titles)
+        || mb_stripos($title, 'розмір під замовлення') !== false
+        || mb_stripos($title, 'под заказ') !== false
+        || mb_stripos($title, 'размер под') !== false
+        || mb_stripos($title, 'нестандарт') !== false
+        || mb_stripos($title, 'ціна за м2') !== false
+        || mb_stripos($title, 'цена за м2') !== false;
+}
+
+// ---------------------------------------------------------------
+// Fallback brand detection (2026-10-29): Мономаркет's product-quality
+// report flagged 93 products with a missing "brand" option entirely
+// -- these are offers where Horoshop's own <vendor> tag came through
+// empty, so $brand was being sent to Мономаркет as "". This also
+// silently broke the brand-specific rules above (Billerbeck/
+// Eurosleep/EMM/DORMISAN/hidden-brands) for any of those 93 products
+// that actually belong to one of those brands, since those all key
+// off the same empty vendor field. When <vendor> is empty, fall back
+// to spotting a known brand name inside the title instead of sending
+// a blank brand.
+// ---------------------------------------------------------------
+const KNOWN_BRAND_KEYWORDS = [
+    'billerbeck' => 'Billerbeck',
+    'біллербек' => 'Billerbeck',
+    'биллербек' => 'Billerbeck',
+    'eurosleep' => 'Eurosleep',
+    'euroslip' => 'Eurosleep',
+    'єврослип' => 'Eurosleep',
+    'еврослип' => 'Eurosleep',
+    'dormisan' => 'DORMISAN',
+    'vitalson' => 'VitalSon',
+    'come-for aero' => 'Come-for Aero',
+    'magniflex' => 'Magniflex',
+    'jbm' => 'JBM',
+    'brn' => 'BRN',
+    'emm' => 'EMM',
+    'chef' => 'Chef',
+];
+
+function inferBrandFromTitle($title) {
+    foreach (KNOWN_BRAND_KEYWORDS as $needle => $canonicalBrand) {
+        if (mb_stripos($title, $needle) !== false) return $canonicalBrand;
+    }
+    return '';
+}
+
 ini_set('memory_limit', '512M');
 set_time_limit(120);
 
@@ -376,10 +436,26 @@ function cleanDescription($html, $forbiddenKeywords) {
 
 // Extracts "Label: value" spec lines (Тип, Жорсткість, Навантаження,
 // Об'ємна висота, Країна виробник) from raw description text.
+//
+// 2026-10-29: Мономаркет's quality report flagged "Розподіл
+// навантаження" (load_distribution) as the single most commonly
+// missing characteristic (151 of 274 products). The old version of
+// this function collapsed EVERY "...навантаження" label it found
+// into one generic "Максимальне навантаження" bucket, so a
+// "Розподіл навантаження" line in the source description -- if
+// present -- was being renamed and never reached Мономаркет under
+// the name it actually asks for. Now the two are kept distinct: a
+// line literally about "розподіл" keeps that name, everything else
+// navantazhennya-related still falls back to "Максимальне
+// навантаження" as before. This does NOT invent a value Horoshop
+// doesn't provide -- if "Розподіл навантаження" genuinely isn't in
+// the source description for a given product, it will still come
+// out missing, same as before.
 function extractSpecs($html) {
     $specs = [];
     $labels = [
         "Тип", "Жорсткість", "Навантаження",
+        "Розподіл навантаження",
         "Максимальне навантаження на 1 спальне місце",
         "Об'ємна висота", "Об’ємна висота",
         "Країна виробник", "Країна-виробник", "Країна - виробник",
@@ -393,6 +469,7 @@ function extractSpecs($html) {
                 $normLabel = $label;
                 if (mb_strpos($label, 'висота') !== false) $normLabel = "Об'ємна висота";
                 elseif (mb_strpos($label, 'виробник') !== false) $normLabel = "Країна виробник";
+                elseif (mb_stripos($label, 'розподіл') !== false) $normLabel = "Розподіл навантаження";
                 elseif (mb_strpos($label, 'навантаження') !== false) $normLabel = "Максимальне навантаження";
                 if ($value !== '') $specs[$normLabel] = $value;
             }
@@ -594,10 +671,23 @@ if ($type === 'catalog') {
             if (mb_stripos($vendorForExclusionCheck, 'utech') !== false || mb_stripos($vendorForExclusionCheck, 'ютек') !== false) continue; // UTech (наматрацники/подушки) removed from the feed entirely
             if (isBlockedSku($offer) && BLOCKED_SKU_MODE === 'remove') continue; // точкове блокування за артикулом
             $vendorCode = isset($offer->vendorCode) ? (string)$offer->vendorCode : '';
-            $brand = isset($offer->vendor) ? (string)$offer->vendor : '';
+            $vendorRaw = isset($offer->vendor) ? (string)$offer->vendor : '';
             $titleRaw = isset($offer->name) ? (string)$offer->name : '';
             if (isBlockedTitle($titleRaw)) continue; // товар видалено з фіда за назвою моделі
+            // "Розмір під замовлення" / "ціна за м2" товари прибрані з
+            // КАТАЛОГУ повністю (2026-10-29, за звітом Мономаркету про
+            // якість картки) -- у них немає фіксованого розміру/ціни, тож
+            // обов'язкові характеристики розміру (Розмір матрацу, Спальний
+            // розмір, Ширина/Довжина матрацу) для них неможливо заповнити.
+            // У прайс-листі (type=prices) вони лишаються, як і раніше, --
+            // просто недоступними до замовлення.
+            if (isCustomSizeOrderTitle($titleRaw)) continue;
             $title = preg_replace('/\bМатрас\b/u', 'Матрац', $titleRaw);
+            // Якщо Horoshop не вказав бренд (<vendor> порожній) -- 93
+            // товари в звіті Мономаркету про якість мали зовсім відсутнє
+            // поле "бренд" через це -- підставляємо бренд, розпізнаний за
+            // назвою товару, замість порожнього рядка.
+            $brand = $vendorRaw !== '' ? $vendorRaw : inferBrandFromTitle($title);
             $descriptionHtml = isset($offer->description) ? (string)$offer->description : '';
 
             $specs = extractSpecs($descriptionHtml);
@@ -612,6 +702,8 @@ if ($type === 'catalog') {
             $barcode = $sourceBarcode !== '' ? $sourceBarcode : generateBarcode($offerId);
             $dims = estimateDimensions($title);
             $realMattressSize = null; // for the "Розмір" spec (actual WxL, not rolled package)
+            $realWidthCm = null;
+            $realLengthCm = null;
             // Weight/dimensions are only reliable for mattresses (category
             // 1061) -- the rolled-width override and volumetric formula
             // below assume a mattress. Everything else (pillows, blankets,
@@ -620,6 +712,8 @@ if ($type === 'catalog') {
                 $dims = null;
             } elseif ($dims) {
                 $realMattressSize = $dims['width'] . 'x' . $dims['length']; // real size, before override
+                $realWidthCm = $dims['width'];
+                $realLengthCm = $dims['length'];
                 // All mattresses ship rolled/compressed -- the real package
                 // width is a fixed roll diameter, not the flat mattress
                 // width from the title. Length and height stay as estimated.
@@ -631,6 +725,21 @@ if ($type === 'catalog') {
 
             if ($realMattressSize !== null) {
                 $specs['Розмір'] = $realMattressSize;
+                // 2026-10-29: Мономаркет's quality report asked specifically
+                // for these four named characteristics (its own wording,
+                // taken verbatim from the report) on top of the generic
+                // "Розмір" tag above -- "Розмір" alone wasn't being matched
+                // to any of Мономаркет's required fields, so every
+                // fixed-size mattress was still showing up as missing
+                // mattras_size/sleeping_size/range_mattras_width/
+                // range_mattras_length even though we already know the
+                // size from the title. Custom-size offers never reach this
+                // branch (they're skipped above), so these are only ever
+                // filled with a real, known size -- never guessed.
+                $specs['Розмір матрацу'] = $realMattressSize;
+                $specs['Спальний розмір'] = $realMattressSize;
+                $specs['Ширина матрацу'] = (string)$realWidthCm;
+                $specs['Довжина матрацу'] = (string)$realLengthCm;
             }
 
             $writer->startElement('offer');
@@ -661,15 +770,26 @@ if ($type === 'catalog') {
                 $writer->endElement(); // image_link
             }
 
-            if (!empty($specs)) {
-                $writer->startElement('tags');
-                foreach ($specs as $label => $value) {
-                    $writer->startElement('param');
-                    $writer->writeAttribute('name', $label);
-                    $writer->text($value);
-                    $writer->endElement(); // param
-                }
-                $writer->endElement(); // tags
+            // 2026-10-29: <param> used to be nested inside a <tags>
+            // wrapper here. That's not part of the standard YML format
+            // (the format this whole feed otherwise follows) -- a normal
+            // YML/Prom/Rozetka-style feed writes <param name="...">value
+            // </param> directly under <offer>, with no wrapping element.
+            // Мономаркет's product-quality report showed EVERY tracked
+            // characteristic (load_distribution, mattras_size,
+            // sleeping_size, range_mattras_width, range_mattras_length,
+            // type_stiffness...) as missing on the vast majority of
+            // products, across every brand and category -- not just the
+            // ones with a genuinely missing value in the source data.
+            // That pattern matches "Мономаркет's importer isn't looking
+            // inside <tags> at all" better than "every single description
+            // happens to lack this field," so <param> is now written as a
+            // direct child of <offer>, matching the standard.
+            foreach ($specs as $label => $value) {
+                $writer->startElement('param');
+                $writer->writeAttribute('name', $label);
+                $writer->text($value);
+                $writer->endElement(); // param
             }
 
             $writer->startElement('description');
@@ -722,13 +842,9 @@ if ($type === 'prices') {
             // the source feed (or the supplier stock match below) says.
             $titleForCustomSizeCheck = isset($offer->name) ? (string)$offer->name : '';
             if (isBlockedTitle($titleForCustomSizeCheck)) continue; // товар видалено з фіда за назвою моделі
-            $isCustomSizeOrder = mb_stripos($titleForCustomSizeCheck, 'під замов') !== false // catches "під замовлення" even truncated to "під замов" (Horoshop cuts long titles)
-                || mb_stripos($titleForCustomSizeCheck, 'розмір під замовлення') !== false
-                || mb_stripos($titleForCustomSizeCheck, 'под заказ') !== false
-                || mb_stripos($titleForCustomSizeCheck, 'размер под') !== false
-                || mb_stripos($titleForCustomSizeCheck, 'нестандарт') !== false
-                || mb_stripos($titleForCustomSizeCheck, 'ціна за м2') !== false
-                || mb_stripos($titleForCustomSizeCheck, 'цена за м2') !== false;
+            // (2026-10-29: this check now lives in isCustomSizeOrderTitle(),
+            // shared with type=catalog, instead of being duplicated here.)
+            $isCustomSizeOrder = isCustomSizeOrderTitle($titleForCustomSizeCheck);
             if ($isCustomSizeOrder) {
                 $isAvailable = false;
             }
@@ -746,7 +862,14 @@ if ($type === 'prices') {
                 $isAvailable = true; // always show mattresses as available (except custom-size, handled above); days_to_dispatch below reflects the real supplier signal
             }
 
-            $brandForCheck = isset($offer->vendor) ? (string)$offer->vendor : '';
+            // 2026-10-29: fall back to a title-based brand guess when
+            // Horoshop's <vendor> is empty -- same fix as type=catalog.
+            // Without this, any of these brand-specific rules below
+            // (Billerbeck/Eurosleep/EMM/DORMISAN/hidden-brands) would
+            // silently never match for a product whose vendor field came
+            // through blank, even if it's genuinely one of these brands.
+            $vendorForCheckRaw = isset($offer->vendor) ? (string)$offer->vendor : '';
+            $brandForCheck = $vendorForCheckRaw !== '' ? $vendorForCheckRaw : inferBrandFromTitle($titleForCustomSizeCheck);
 
             // Brand exception: Billerbeck strictly follows Horoshop's own
             // availability flag -- in stock -> available (3 days),
