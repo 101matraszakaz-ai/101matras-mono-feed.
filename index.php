@@ -730,6 +730,25 @@ if ($type === 'catalog') {
             $availAttr = isset($offer['available']) ? strtolower((string)$offer['available']) : 'false';
             $isAvailable = in_array($availAttr, ['true', '1', 'yes']);
 
+            // 2026-11-07: BRN-enabled-model override, mirrored here from
+            // type=prices. Without this, the CATALOG's own <availability>
+            // tag kept reflecting Horoshop's raw flag (almost always
+            // "false" for BRN, which is the whole reason this brand was
+            // hidden in the first place) even for the 5 models Віталик
+            // explicitly re-enabled -- so type=prices said available=true
+            // while type=catalog still said "Немає в наявності" for the
+            // very same offer. Мономаркет apparently won't show a product
+            // as purchasable when the catalog feed itself marks it
+            // unavailable, no matter what the price feed says, which is
+            // why "Exuberant 160x200" showed up in the catalog (title
+            // matched) but never actually displayed as available. Custom-
+            // size offers can't reach this line at all (skipped earlier),
+            // so this can't accidentally make a "під замовлення" item
+            // show as available.
+            if (isBrnEnabledModelSize($brand, $title)) {
+                $isAvailable = true;
+            }
+
             if ($realMattressSize !== null) {
                 $specs['Розмір'] = $realMattressSize;
                 // 2026-10-29: Мономаркет's quality report asked specifically
@@ -924,16 +943,18 @@ if ($type === 'prices') {
                 $daysToDispatch = $horoshopAvailable ? 3 : 12;
             }
 
-            // Brand exception: Eurosleep always ships in 5 days, regardless
+            // Brand exception: Eurosleep always ships in 10 days, regardless
             // of stock/availability signals -- yields only to the
-            // custom-size rule above. (Changed from 6 -> 5 on 2026-09-24.)
+            // custom-size rule above (and to the topper exception below,
+            // which still sets toppers of this brand to 15 days).
+            // (Changed from 6 -> 5 on 2026-09-24, then 5 -> 10 on 2026-11-10.)
             $isEuroslip = mb_stripos($brandForCheck, 'eurosleep') !== false
                 || mb_stripos($brandForCheck, 'euroslip') !== false
                 || mb_stripos($brandForCheck, 'euro slip') !== false
                 || mb_stripos($brandForCheck, 'єврослип') !== false
                 || mb_stripos($brandForCheck, 'еврослип') !== false;
             if ($isEuroslip && !$isCustomSizeOrder) {
-                $daysToDispatch = 5;
+                $daysToDispatch = 10;
             }
 
             // Manufacturer exception: EMM (covers all their mattress
