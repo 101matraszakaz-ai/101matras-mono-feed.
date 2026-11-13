@@ -168,6 +168,15 @@ const KNOWN_BRAND_KEYWORDS = [
     'euroslip' => 'Eurosleep',
     'єврослип' => 'Eurosleep',
     'еврослип' => 'Eurosleep',
+    // 2026-11-13: "Simplex" is an Eurosleep topper model line whose
+    // title apparently doesn't contain the word "Eurosleep"/"Евросліп"
+    // at all, and whose Horoshop <vendor> field is empty -- so it fell
+    // through both the vendor check and the eurosleep keyword check
+    // below, and never got the brand's 10-day dispatch rule (type=prices)
+    // or correct brand (type=catalog). Mapping it straight to Eurosleep here.
+    'simplex' => 'Eurosleep',
+    'сімплекс' => 'Eurosleep',
+    'симплекс' => 'Eurosleep',
     'dormisan' => 'DORMISAN',
     'vitalson' => 'VitalSon',
     'come-for aero' => 'Come-for Aero',
@@ -948,11 +957,20 @@ if ($type === 'prices') {
             // custom-size rule above (and to the topper exception below,
             // which still sets toppers of this brand to 15 days).
             // (Changed from 6 -> 5 on 2026-09-24, then 5 -> 10 on 2026-11-10.)
+            // 2026-11-13: also check the raw title directly (not only
+            // $brandForCheck/vendor) for "simplex"/"сімплекс"/"симплекс" --
+            // this is the Eurosleep topper model line that was slipping
+            // through, in case its Horoshop <vendor> field is non-empty
+            // but doesn't literally say "Eurosleep" (so the vendor-first
+            // fallback chain above never even looks at the keyword list).
             $isEuroslip = mb_stripos($brandForCheck, 'eurosleep') !== false
                 || mb_stripos($brandForCheck, 'euroslip') !== false
                 || mb_stripos($brandForCheck, 'euro slip') !== false
                 || mb_stripos($brandForCheck, 'єврослип') !== false
-                || mb_stripos($brandForCheck, 'еврослип') !== false;
+                || mb_stripos($brandForCheck, 'еврослип') !== false
+                || mb_stripos($titleForCustomSizeCheck, 'simplex') !== false
+                || mb_stripos($titleForCustomSizeCheck, 'сімплекс') !== false
+                || mb_stripos($titleForCustomSizeCheck, 'симплекс') !== false;
             if ($isEuroslip && !$isCustomSizeOrder) {
                 $daysToDispatch = 10;
             }
